@@ -1,22 +1,43 @@
+"""
+@file uhd_spectrogram.py
+@brief This script captures radio frequency samples from a USRP device and generates spectrograms for each captured frequency.
+It uses the `uhd` library for hardware control and interaction with the USRP, and it leverages `scipy` for signal processing tasks such as Welch's method for power spectral density estimation and spectrogram generation.
+@author [Your Name]
+@date [Date]
+"""
+
 from joblib import Parallel, delayed
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os, shutil
-from scipy.signal import welch
+from scipy.signal import welch, spectrogram
 import time
 import uhd
 
+
+
+# Define directories for samples and plots
 samples_dir = './samples'
 plots_dir = './plots'
-clear_after_plotting = False
+clear_after_plotting = True # change this to `False` if you want to save the samples from each sweep
 
+
+
+# Configure logging to print info messages with function name, process ID, etc.
 logging.basicConfig(
         level=logging.INFO,
-        format='[%(levelname)s] (func=%(funcName)s) (PID=%(process)d):%(message)s'
+        format='[%(levelname)s] (func=%(funcName)s) (PID=%(process)d) (processName=%(processName)s):%(message)s'
     )
 
+
+
 def empty_dir(folder: str):
+    """
+    Clears the specified directory of all files and subdirectories.
+    
+    @param folder: The path to the directory that needs to be cleared.
+    """
     cleared_files = 0
     statinfo_start = os.stat(folder).st_size
     for filename in os.listdir(folder):
@@ -28,25 +49,30 @@ def empty_dir(folder: str):
                 shutil.rmtree(file_path)
             cleared_files += 1
         except Exception as e:
-            print(f"Failed to remove {file_path} due to {e}")
+            logging.warn(f"Failed to remove {file_path} due to {e}")
     statinfo_end = os.stat(folder).st_size
     logging.info(f"Finished clearing {cleared_files} old files from {folder}, which saved {(statinfo_end - statinfo_start) // 1e6}Mb")
 
 
 
 def plot_samples(file_path: str, sample_rate, center_freq, samples, NFFT):
+    """
+    Plots the captured samples as a spectrogram.
     
+    @param file_path: The path to the saved numpy array of samples.
+    @param sample_rate: The sampling rate of the USRP device.
+    @param center_freq: The central frequency at which the USRP is tuned.
+    @param samples: The captured radio frequency samples.
+    @param NFFT: Number of points in each FFT.
+    """
+
+    # Define the output file path for the spectrogram image
     spectrogram_filename = plots_dir +"/" + f"spectrogram_{int(center_freq // 1e6)}MHz.png"
     
     try:
-        # plt.specgram(samples, NFFT=NFFT, Fs=sample_rate, cmap='viridis')
-        # plt.title(f"Spectrogram of {center_freq}")
-        # plt.xlabel("Time (s)")
-        # plt.ylabel("Frequency MHz")
-        # plt.colorbar(label="Intensity (dB)")
-        # plt.savefig(spectrogram_filename)
-        # plt.close()
-        
+        fig, (ax1, ax2) = plt.subplots(2, 1)
+
+        # Plot the Power Spectral Density (PSD) using Welch's method
         freqs, psd = welch(samples, 
                             fs=sample_rate, 
                             window='blackmanharris', 
@@ -54,41 +80,60 @@ def plot_samples(file_path: str, sample_rate, center_freq, samples, NFFT):
                             scaling='spectrum',
                             return_onesided=False)        
         logging.info(f'Created Welch PSD')
-        # Create a plot for the PSD
-        plt.figure(figsize=(8, 4))
-        
 
         freq_axis = freqs + center_freq
-        plt.plot(np.ravel(freq_axis)/ 1e6, np.sqrt(np.ravel(psd))) # ravel each due to different shapes
+        ax1.plot(np.ravel(freq_axis)/ 1e6, np.sqrt(np.ravel(psd))) # ravel each due to different shapes
+        ax1.set_title(f"PSD at {center_freq/1e6:.2f} MHz")
+        ax1.set_xlabel("Frequency (MHz)")
+        ax1.set_ylabel("PSD (V^2/Hz)")
+        ax1.grid()
+        
+        
+        f, t, Sxx = spectrogram(samples, 
+                                sample_rate,
+                                return_onesided=False)
+        logging.info(f'Created Spectrogram')
+        freq_axis2 = f + center_freq
 
-        plt.title(f"PSD at {center_freq/1e6:.2f} MHz")
-        plt.xlabel("Frequency (MHz)")
-        plt.ylabel("PSD (V^2/Hz)")
-        plt.grid(True)
+        ax2.pcolormesh(freq_axis2 / 1e6, t, np.squeeze(Sxx).T, shading='auto') # Sxx has 3 dims, but needs only the two matching f and t.
+                                                                   # Also, plot frequency on the x-axis with the transpose
+        ax2.set_title(f"PSD at {center_freq/1e6:.2f} MHz")
+        ax2.set_ylabel("Time (s)")
+        ax2.set_xlabel("Frequency MHz")
+        ax2.grid()
         plt.tight_layout()
-        plt.savefig(spectrogram_filename)
-        logging.info(f'Save Welch PSD in {spectrogram_filename}')
+        fig.savefig(spectrogram_filename)
         if clear_after_plotting:
+            # Remove the file after plotting
             if os.path.isfile(file_path) or os.path.islink(file_path):
                 os.unlink(file_path)
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
             logging.info(f"Removed {file_path} ")
-    except Exception as e:
+    except IOError as e:
         logging.error(f"Failed to remove {file_path} due to {e}")
+    except TypeError as e:
+        logging.error(f"Failed to create a spectrogram {spectrogram_filename} from {file_path} due to {e}")
+    except Exception as e:
+        logging.error(f'f dims: {f.shape}\tt dims {t.shape}\t Sxx dims {Sxx.shape}')
+        raise Exception
 
-
-
+# Main function to configure and run the USRP for frequency sweeping
 def main():
+    """
+    Main function to configure and run the USRP for frequency sweeping, capture samples, and generate spectrograms.
+    """
+
     # Initialize USRP device
     usrp = uhd.usrp.MultiUSRP()
 
-    # Configuration parameters
+    # Configuration parameters # TODO: use argparser to clean this out
     duration_seconds = 5
     sample_rate = 30e6  # Msps
     center_freq_start = 70e6  # Start of frequency range (70 MHz)
     center_freq_end = 6e9  # End of frequency range (6 GHz)
-    step_size = 10e6  # Frequency step size (10 MHz)
+    step_size = np.floor(sample_rate / 2)
+
     gain = 5  # Gain in dB
     # num_samples = int(sample_rate * duration_seconds)  # 5 seconds worth of samples
     num_samples = 4096
@@ -106,29 +151,24 @@ def main():
         logging.info(f"Tuned to {freq/1e6} MHz")
 
         # Capture samples
-        stream_args = uhd.usrp.StreamArgs("fc32", "sc16")  # Complex floats
-        rx_stream = usrp.get_rx_stream(stream_args)
-        buffer = np.zeros((num_samples,), dtype=np.complex64)
-
-        rx_metadata = uhd.types.RXMetadata()
-        samples_received = rx_stream.recv(buffer, rx_metadata, timeout=6.0)
+        try:
+            samps = usrp.recv_num_samps(num_samples, freq, sample_rate, channels, gain)
+        except RuntimeError as e:
+            logging.error(f"Caught an RuntimeError exception when sampling the receiver.  Sleeping for 10 seconds and trying again.  Here's the exception: {e}")
+            time.sleep(10)
+            samps = usrp.recv_num_samps(num_samples, freq, sample_rate, channels, gain)
         
-        samps = usrp.recv_num_samps(num_samples, freq, sample_rate, channels, gain)
-        
+        # Save sample; perhaps we want to save the array of samples.
         filename = samples_dir + "/" +  f"samples_{int(freq/1e6)}MHz.npy"
         args = [(filename, sample_rate, freq, samps, 4096)]
-        if samples_received > 0:
-            logging.info(f"Captured {samples_received} samples at {freq/1e6} MHz")
-            # Save the captured samples (optional)
-            np.save(filename, buffer[:samples_received])
-            logging.info(f"Saved samples to {filename}")
-        elif len(samps) > 0:
-            logging.info(f"Captured {samps.shape[1]} samples at {freq/1e6} MHz from UHD example")
-            with open(filename, 'wb') as out_file:
-                np.save(out_file, samps, allow_pickle=False, fix_imports=False)
-            logging.info(f"Saved np samples to {filename}")
-            results = Parallel(n_jobs=1)(delayed(plot_samples)(*a) for a in args)
+        
+        logging.info(f"Captured {samps.shape[1]} samples at {freq/1e6} MHz from UHD example")
+        with open(filename, 'wb') as out_file:
+            np.save(out_file, samps, allow_pickle=False, fix_imports=False)
+        logging.info(f"Saved np samples to {filename}")
 
+        # Make PSD and Spectrogram of the captured samples
+        results = Parallel(n_jobs=1)(delayed(plot_samples)(*a) for a in args)
 
         # Move to the next frequency
         freq += step_size
