@@ -123,6 +123,7 @@ def main():
     """
     Main function to configure and run the USRP for frequency sweeping, capture samples, and generate spectrograms.
     """
+    start_time = time.time()
 
     # Initialize USRP device
     usrp = uhd.usrp.MultiUSRP()
@@ -132,11 +133,11 @@ def main():
     sample_rate = 30e6  # Msps
     center_freq_start = 70e6  # Start of frequency range (70 MHz)
     center_freq_end = 6e9  # End of frequency range (6 GHz)
-    step_size = np.floor(sample_rate / 2)
+    step_size = int(sample_rate // 2)
 
-    gain = 5  # Gain in dB
+    gain = 0  # Gain in dB
     # num_samples = int(sample_rate * duration_seconds)  # 5 seconds worth of samples
-    num_samples = 4096
+    num_samples = int(2e6)
     channels = [0] # use a single channel, must be as list
 
     # Configure Rx channel
@@ -152,6 +153,7 @@ def main():
 
         # Capture samples
         try:
+            print(f'{type(num_samples)}\t{type(freq)}\t{type(sample_rate)}\t{type(channels)}\t{type(gain)}\t')
             samps = usrp.recv_num_samps(num_samples, freq, sample_rate, channels, gain)
         except RuntimeError as e:
             logging.error(f"Caught an RuntimeError exception when sampling the receiver.  Sleeping for 10 seconds and trying again.  Here's the exception: {e}")
@@ -173,7 +175,7 @@ def main():
         # Move to the next frequency
         freq += step_size
 
-    logging.info("Frequency sweep completed.")
+    logging.info(f"Frequency sweep completed in {time.time() - start_time:.2f} seconds")
 
 if __name__ == "__main__":
     
